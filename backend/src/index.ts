@@ -21,10 +21,25 @@ import adminRoutes from './routes/admin.routes.js';
 const app = express();
 const server = http.createServer(app);
 
+// Render (and similar hosts) sit behind a reverse proxy that sets X-Forwarded-For.
+app.set('trust proxy', 1);
+
 app.use(helmet());
 app.use(
   cors({
-    origin: [env.FRONTEND_URL, env.ADMIN_URL],
+    origin: (origin, cb) => {
+      // Allow non-browser requests (no Origin), exact configured origins,
+      // and Vercel preview deployments for this project.
+      if (!origin) return cb(null, true);
+
+      const allowed = new Set([env.FRONTEND_URL, env.ADMIN_URL]);
+      const isVercelPreview =
+        origin.startsWith('https://lms-frontend-9ggk') &&
+        origin.endsWith('.vercel.app');
+
+      if (allowed.has(origin) || isVercelPreview) return cb(null, true);
+      return cb(new Error(`CORS blocked origin: ${origin}`));
+    },
     credentials: true,
   })
 );
