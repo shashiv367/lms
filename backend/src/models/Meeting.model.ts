@@ -33,7 +33,7 @@ export interface IMeeting extends Document {
 
 const meetingSettingsSchema = new Schema<IMeetingSettings>(
   {
-    waitingRoom: { type: Boolean, default: true },
+    waitingRoom: { type: Boolean, default: false },
     allowChat: { type: Boolean, default: true },
     allowScreenShare: { type: Boolean, default: true },
     muteOnEntry: { type: Boolean, default: false },
