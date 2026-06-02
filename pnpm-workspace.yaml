@@ -1,0 +1,10 @@
+packages:
+  - "backend"
+  - "frontend"
+  - "admin-panel"
+allowBuilds:
+  bcrypt: true
+  esbuild: true
+  mediasoup: true
+  msgpackr-extract: true
+  sharp: true
