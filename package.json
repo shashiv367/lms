@@ -7,6 +7,6 @@
     "build": "pnpm -r run build"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.0.0 <22.0.0"
   }
 }
