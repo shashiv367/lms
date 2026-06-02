@@ -100,6 +100,7 @@ export interface PeerInfo {
   cameraEnabled: boolean;
   handRaised: boolean;
   isScreenSharing: boolean;
+  waiting?: boolean;
 }
 
 export interface RoomJoinedPayload {

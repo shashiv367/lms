@@ -107,6 +107,7 @@ export function registerReactionHandlers(socket: Socket): void {
             .map((p) => p.toInfo()),
           rtpCapabilities: room.getRtpCapabilities(),
           peerId: peer.peerId,
+          existingProducers: room.getOtherProducers(peer.peerId),
         });
       }
     });

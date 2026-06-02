@@ -4,17 +4,32 @@ import { X } from 'lucide-react';
 import { ParticipantItem } from './ParticipantItem';
 import { useUiStore } from '@/store/uiStore';
 import { useParticipantStore } from '@/store/participantStore';
-import { useMeetingStore } from '@/store/meetingStore';
+import { getMeetingSocket } from '@/services/socket.service';
+import { useAuthStore } from '@/store/authStore';
+import { Button } from '@/components/ui/button';
 
 interface ParticipantsPanelProps {
   meetingId: string;
 }
 
-export function ParticipantsPanel({ meetingId: _meetingId }: ParticipantsPanelProps) {
+export function ParticipantsPanel({ meetingId }: ParticipantsPanelProps) {
   const toggleParticipants = useUiStore((s) => s.toggleParticipants);
   const peers = useParticipantStore((s) => s.peers);
   const localPeer = useParticipantStore((s) => s.localPeer);
+  const accessToken = useAuthStore((s) => s.accessToken);
   const count = peers.size + (localPeer ? 1 : 0);
+  const isHost = localPeer?.role === 'host' || localPeer?.role === 'co-host';
+
+  const waitingPeers = Array.from(peers.values()).filter((p) => p.waiting);
+  const activePeers = Array.from(peers.values()).filter((p) => !p.waiting);
+
+  const admit = (peerId: string) => {
+    if (!accessToken) return;
+    getMeetingSocket(accessToken).emit('admit-from-waiting', {
+      meetingId,
+      targetPeerId: peerId,
+    });
+  };
 
   return (
     <aside className="flex w-80 flex-col border-l border-zinc-800 bg-zinc-900/95">
@@ -28,7 +43,31 @@ export function ParticipantsPanel({ meetingId: _meetingId }: ParticipantsPanelPr
         {localPeer && (
           <ParticipantItem peer={localPeer} isLocal />
         )}
-        {Array.from(peers.values()).map((p) => (
+        {isHost && waitingPeers.length > 0 && (
+          <div className="mb-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-400">
+              Waiting room ({waitingPeers.length})
+            </p>
+            <div className="space-y-2">
+              {waitingPeers.map((p) => (
+                <div key={p.peerId} className="flex items-center gap-2">
+                  <div className="flex-1 min-w-0">
+                    <ParticipantItem peer={p} />
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => admit(p.peerId)}
+                  >
+                    Admit
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {activePeers.map((p) => (
           <ParticipantItem key={p.peerId} peer={p} />
         ))}
       </div>

@@ -148,7 +148,150 @@ export function useMediasoup(meetingId: string) {
       socket.off('peer-left');
       socket.off('peer-state-updated');
       socket.off('meeting-ended');
+      socket.off('room-joined');
+      socket.off('waiting-room-admitted');
       const device = getDevice();
+
+      const setupConnected = async (joined: RoomJoinedEvent) => {
+        await device.load({
+          routerRtpCapabilities: joined.rtpCapabilities as RouterRtpCapabilities,
+        });
+        setLocalPeerId(joined.peerId);
+        setLocalPeer({
+          peerId: joined.peerId,
+          userId: useAuthStore.getState().user?._id ?? '',
+          displayName,
+          role: 'participant',
+          micEnabled: true,
+          cameraEnabled: true,
+          handRaised: false,
+          isScreenSharing: false,
+        });
+
+        joined.peers.forEach((p) => addPeer(p));
+
+        const sendData = await emitAck<{
+          id: string;
+          iceParameters: IceParameters;
+          iceCandidates: IceCandidates;
+          dtlsParameters: DtlsParameters;
+        }>(socket, 'create-transport', { meetingId, direction: 'send' });
+
+        const sendTransport = device.createSendTransport({
+          id: sendData.id,
+          iceParameters: sendData.iceParameters,
+          iceCandidates: sendData.iceCandidates,
+          dtlsParameters: sendData.dtlsParameters,
+        });
+        sendTransportRef.current = sendTransport;
+
+        sendTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+          emitAck(socket, 'connect-transport', {
+            meetingId,
+            transportId: sendTransport.id,
+            dtlsParameters,
+          })
+            .then(() => callback())
+            .catch(errback);
+        });
+
+        sendTransport.on('produce', async ({ kind, rtpParameters, appData }, callback, errback) => {
+          try {
+            const { producerId } = await emitAck<{ producerId: string }>(socket, 'produce', {
+              meetingId,
+              transportId: sendTransport.id,
+              kind,
+              rtpParameters,
+              appData,
+            });
+            callback({ id: producerId });
+          } catch (e) {
+            errback(e as Error);
+          }
+        });
+
+        const recvData = await emitAck<typeof sendData>(socket, 'create-transport', {
+          meetingId,
+          direction: 'recv',
+        });
+
+        const recvTransport = device.createRecvTransport({
+          id: recvData.id,
+          iceParameters: recvData.iceParameters,
+          iceCandidates: recvData.iceCandidates,
+          dtlsParameters: recvData.dtlsParameters,
+        });
+        recvTransportRef.current = recvTransport;
+
+        recvTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+          emitAck(socket, 'connect-transport', {
+            meetingId,
+            transportId: recvTransport.id,
+            dtlsParameters,
+          })
+            .then(() => callback())
+            .catch(errback);
+        });
+
+        const stream = await ensureLiveLocalStream();
+        const audioTrack = stream.getAudioTracks()[0];
+        const videoTrack = stream.getVideoTracks()[0];
+        if (audioTrack?.readyState === 'live') {
+          const p = await sendTransport.produce({ track: audioTrack });
+          producersRef.current.set(p.id, p);
+        }
+        if (videoTrack?.readyState === 'live') {
+          const p = await sendTransport.produce({ track: videoTrack });
+          producersRef.current.set(p.id, p);
+        }
+
+        for (const prod of joined.existingProducers ?? []) {
+          if (prod.kind === 'audio' || prod.kind === 'video') {
+            await consumeProducer(socket, prod.producerId, prod.peerId);
+          }
+        }
+
+        socket.on('new-producer', (data: NewProducerEvent) => {
+          void consumeProducer(socket, data.producerId, data.peerId);
+        });
+
+        socket.on('producer-closed', ({ producerId, peerId }: { producerId: string; peerId: string }) => {
+          for (const [id, consumer] of consumersRef.current) {
+            if (consumer.producerId === producerId) {
+              consumer.close();
+              consumersRef.current.delete(id);
+            }
+          }
+          updatePeer(peerId, { isScreenSharing: false });
+        });
+
+        socket.on('peer-joined', ({ peer }: { peer: Parameters<typeof addPeer>[0] }) => {
+          const localId = useMeetingStore.getState().localPeerId;
+          if (peer.peerId !== localId) addPeer(peer);
+        });
+
+        socket.on('peer-left', ({ peerId }: { peerId: string }) => {
+          removePeer(peerId);
+        });
+
+        socket.on('peer-state-updated', (data: {
+          peerId: string;
+          micEnabled: boolean;
+          cameraEnabled: boolean;
+          handRaised: boolean;
+        }) => {
+          updatePeer(data.peerId, data);
+        });
+
+        socket.on('meeting-ended', () => {
+          useMeetingStore.getState().endMeeting();
+          setStatus('ended');
+          leaveRoom();
+        });
+
+        setStatus('connected');
+        joiningRef.current = false;
+      };
 
       const joined = await emitAck<RoomJoinedEvent>(socket, 'join-room', {
         meetingId,
@@ -159,146 +302,18 @@ export function useMediasoup(meetingId: string) {
       if (joined.waiting) {
         setStatus('waiting');
         setLocalPeerId(joined.peerId);
+        joiningRef.current = false;
+
+        socket.on('waiting-room-admitted', () => {
+          // UI remains in waiting until room-joined arrives
+        });
+        socket.on('room-joined', (data: RoomJoinedEvent) => {
+          void setupConnected(data);
+        });
         return;
       }
 
-      await device.load({
-        routerRtpCapabilities: joined.rtpCapabilities as RouterRtpCapabilities,
-      });
-      setLocalPeerId(joined.peerId);
-      setLocalPeer({
-        peerId: joined.peerId,
-        userId: useAuthStore.getState().user?._id ?? '',
-        displayName,
-        role: 'participant',
-        micEnabled: true,
-        cameraEnabled: true,
-        handRaised: false,
-        isScreenSharing: false,
-      });
-
-      joined.peers.forEach((p) => addPeer(p));
-
-      const sendData = await emitAck<{
-        id: string;
-        iceParameters: IceParameters;
-        iceCandidates: IceCandidates;
-        dtlsParameters: DtlsParameters;
-      }>(socket, 'create-transport', { meetingId, direction: 'send' });
-
-      const sendTransport = device.createSendTransport({
-        id: sendData.id,
-        iceParameters: sendData.iceParameters,
-        iceCandidates: sendData.iceCandidates,
-        dtlsParameters: sendData.dtlsParameters,
-      });
-      sendTransportRef.current = sendTransport;
-
-      sendTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
-        emitAck(socket, 'connect-transport', {
-          meetingId,
-          transportId: sendTransport.id,
-          dtlsParameters,
-        })
-          .then(() => callback())
-          .catch(errback);
-      });
-
-      sendTransport.on('produce', async ({ kind, rtpParameters, appData }, callback, errback) => {
-        try {
-          const { producerId } = await emitAck<{ producerId: string }>(socket, 'produce', {
-            meetingId,
-            transportId: sendTransport.id,
-            kind,
-            rtpParameters,
-            appData,
-          });
-          callback({ id: producerId });
-        } catch (e) {
-          errback(e as Error);
-        }
-      });
-
-      const recvData = await emitAck<typeof sendData>(socket, 'create-transport', {
-        meetingId,
-        direction: 'recv',
-      });
-
-      const recvTransport = device.createRecvTransport({
-        id: recvData.id,
-        iceParameters: recvData.iceParameters,
-        iceCandidates: recvData.iceCandidates,
-        dtlsParameters: recvData.dtlsParameters,
-      });
-      recvTransportRef.current = recvTransport;
-
-      recvTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
-        emitAck(socket, 'connect-transport', {
-          meetingId,
-          transportId: recvTransport.id,
-          dtlsParameters,
-        })
-          .then(() => callback())
-          .catch(errback);
-      });
-
-      const stream = await ensureLiveLocalStream();
-      const audioTrack = stream.getAudioTracks()[0];
-      const videoTrack = stream.getVideoTracks()[0];
-      if (audioTrack?.readyState === 'live') {
-        const p = await sendTransport.produce({ track: audioTrack });
-        producersRef.current.set(p.id, p);
-      }
-      if (videoTrack?.readyState === 'live') {
-        const p = await sendTransport.produce({ track: videoTrack });
-        producersRef.current.set(p.id, p);
-      }
-
-      for (const prod of joined.existingProducers ?? []) {
-        if (prod.kind === 'audio' || prod.kind === 'video') {
-          await consumeProducer(socket, prod.producerId, prod.peerId);
-        }
-      }
-
-      socket.on('new-producer', (data: NewProducerEvent) => {
-        void consumeProducer(socket, data.producerId, data.peerId);
-      });
-
-      socket.on('producer-closed', ({ producerId, peerId }: { producerId: string; peerId: string }) => {
-        for (const [id, consumer] of consumersRef.current) {
-          if (consumer.producerId === producerId) {
-            consumer.close();
-            consumersRef.current.delete(id);
-          }
-        }
-        updatePeer(peerId, { isScreenSharing: false });
-      });
-
-      socket.on('peer-joined', ({ peer }: { peer: Parameters<typeof addPeer>[0] }) => {
-        const localId = useMeetingStore.getState().localPeerId;
-        if (peer.peerId !== localId) addPeer(peer);
-      });
-
-      socket.on('peer-left', ({ peerId }: { peerId: string }) => {
-        removePeer(peerId);
-      });
-
-      socket.on('peer-state-updated', (data: {
-        peerId: string;
-        micEnabled: boolean;
-        cameraEnabled: boolean;
-        handRaised: boolean;
-      }) => {
-        updatePeer(data.peerId, data);
-      });
-
-      socket.on('meeting-ended', () => {
-        useMeetingStore.getState().endMeeting();
-        setStatus('ended');
-        leaveRoom();
-      });
-
-      setStatus('connected');
+      await setupConnected(joined);
     } catch (err) {
       joiningRef.current = false;
       throw err;

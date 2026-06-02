@@ -82,7 +82,7 @@ export function registerJoinRoomHandler(socket: Socket): void {
       });
 
       if (location === 'waiting') {
-        socket.to(meetingId).emit('peer-joined', { peer: { ...peer.toInfo(), waiting: true } });
+        socket.to(meetingId).emit('peer-joined', { peer: peer.toInfo() });
         callback?.({
           waiting: true,
           peerId,

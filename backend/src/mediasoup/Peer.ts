@@ -62,6 +62,7 @@ export class Peer {
       cameraEnabled: this.cameraEnabled,
       handRaised: this.handRaised,
       isScreenSharing: this.isScreenSharing,
+      waiting: this.inWaitingRoom,
     };
   }
 
